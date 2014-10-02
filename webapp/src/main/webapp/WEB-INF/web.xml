@@ -413,7 +413,7 @@
 	<!-- Gives access to resources within modules -->
 	<servlet>
 		<servlet-name>module_resources</servlet-name>
-		<servlet-class>org.openmrs.module.web.ModuleResourcesServlet</servlet-class>
+		<servlet-class>org.openmrs.module.web.DevelopmentModuleResourcesServlet </servlet-class>
 		<!-- Don't "load-on-startup" in case initial setup wizard is needed -->
 	</servlet>
 	<servlet-mapping>

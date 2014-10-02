@@ -112,9 +112,11 @@
 			</span>
 			<openmrs:extensionPoint pointId="org.openmrs.headerFull.userBar" type="html">
 				<openmrs:hasPrivilege privilege="${extension.requiredPrivilege}">
-					<span>
-						<a href="<c:url value="${extension.url}" />"><openmrs:message code="${extension.label}"/></a>
-					</span>
+                    <c:if test="${extension.label != null}">
+                        <span>
+                            <a href="${pageContext.request.contextPath}/${extension.url}"><openmrs:message code="${extension.label}"/></a>
+                        </span>
+                    </c:if>
 					<c:if test="${extension.portletUrl != null}">
 						<openmrs:portlet url="${extension.portletUrl}" moduleId="${extension.moduleId}" id="${extension.portletUrl}" />
 					</c:if>
