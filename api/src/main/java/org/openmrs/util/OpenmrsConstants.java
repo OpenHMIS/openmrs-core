@@ -197,6 +197,18 @@ public final class OpenmrsConstants {
 	public static String APPLICATION_DATA_DIRECTORY = null;
 	
 	/**
+	 * The directory which OpenMRS should attempt to use as its application data directory
+	 * in case the current users home dir is not writeable (e.g. when using application servers
+	 * like tomcat to deploy OpenMRS).
+	 *
+	 * @see #APPLICATION_DATA_DIRECTORY_RUNTIME_PROPERTY
+	 * @see OpenmrsUtil#getApplicationDataDirectory()
+	 */
+	public static String APPLICATION_DATA_DIRECTORY_FALLBACK_UNIX = "/var/lib";
+	
+	public static String APPLICATION_DATA_DIRECTORY_FALLBACK_WIN = System.getenv("%appdata%");
+	
+	/**
 	 * The name of the runtime property that a user can set that will specify where openmrs's
 	 * application directory is
 	 * 
@@ -795,6 +807,8 @@ public final class OpenmrsConstants {
 	
 	public static final String GLOBAL_PROPERTY_ENABLE_VISITS = "visits.enabled";
 	
+	public static final String GLOBAL_PROPERTY_ALLOW_OVERLAPPING_VISITS = "visits.allowOverlappingVisits";
+	
 	public static final String GLOBAL_PROPERTY_DEFAULT_PATIENT_IDENTIFIER_VALIDATOR = "patient.defaultPatientIdentifierValidator";
 	
 	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_IMPORTANT_TYPES = "patient_identifier.importantTypes";
@@ -1013,7 +1027,10 @@ public final class OpenmrsConstants {
 	
 	public static final String GP_CONCEPT_INDEX_UPDATE_TASK_LAST_UPDATED_CONCEPT = "concept.IndexUpdateTask.lastConceptUpdated";
 	
-	public static final String GP_CASE_SENSITIVE_NAMES_IN_CONCEPT_NAME_TABLE = "concept.caseSensitiveNamesInConceptNameTable";
+	/**
+	 * @since 1.9.9, 1.10.2, 1.11
+	 */
+	public static final String GP_CASE_SENSITIVE_DATABASE_STRING_COMPARISON = "search.caseSensitiveDatabaseStringComparison";
 	
 	public static final String GP_NEXT_ORDER_NUMBER_SEED = "order.nextOrderNumberSeed";
 	
@@ -1452,9 +1469,9 @@ public final class OpenmrsConstants {
 		
 		props
 		        .add(new GlobalProperty(
-		                GP_CASE_SENSITIVE_NAMES_IN_CONCEPT_NAME_TABLE,
+		                GP_CASE_SENSITIVE_DATABASE_STRING_COMPARISON,
 		                "true",
-		                "Indicates whether names in the concept_name table are case sensitive or not. Setting this to false for MySQL with a case insensitive collation improves search performance."));
+		                "Indicates whether database string comparison is case sensitive or not. Setting this to false for MySQL with a case insensitive collation improves search performance."));
 		
 		props.add(new GlobalProperty(GLOBAL_PROPERTY_USER_REQUIRE_EMAIL_AS_USERNAME, "false",
 		        "Indicates whether a username must be a valid e-mail or not.", BooleanDatatype.class, null));
@@ -1483,6 +1500,9 @@ public final class OpenmrsConstants {
 		        "Specifies the uuid of the concept set where its members represent the possible test specimen sources"));
 		
 		props.add(new GlobalProperty(GP_UNKNOWN_PROVIDER_UUID, "", "Specifies the uuid of the Unknown Provider account"));
+		
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_ALLOW_OVERLAPPING_VISITS, "true",
+		        "true/false whether or not to allow visits of a given patient to overlap", BooleanDatatype.class, null));
 		
 		for (GlobalProperty gp : ModuleFactory.getGlobalProperties()) {
 			props.add(gp);

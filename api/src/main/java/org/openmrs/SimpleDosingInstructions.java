@@ -13,6 +13,7 @@
  */
 package org.openmrs;
 
+import static org.apache.commons.lang3.time.DateUtils.addSeconds;
 import java.util.Date;
 import java.util.Locale;
 
@@ -151,7 +152,7 @@ public class SimpleDosingInstructions implements DosingInstructions {
 			return null;
 		}
 		Duration duration = new Duration(drugOrder.getDuration(), durationCode);
-		return duration.addToDate(drugOrder.getEffectiveStartDate(), drugOrder.getFrequency());
+		return aMomentBefore(duration.addToDate(drugOrder.getEffectiveStartDate(), drugOrder.getFrequency()));
 	}
 	
 	public Double getDose() {
@@ -225,4 +226,9 @@ public class SimpleDosingInstructions implements DosingInstructions {
 	public void setAdministrationInstructions(String administrationInstructions) {
 		this.administrationInstructions = administrationInstructions;
 	}
+	
+	private Date aMomentBefore(Date date) {
+		return addSeconds(date, -1);
+	}
+	
 }

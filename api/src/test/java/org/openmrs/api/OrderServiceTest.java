@@ -13,7 +13,6 @@
  */
 package org.openmrs.api;
 
-import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.hasItems;
@@ -28,11 +27,9 @@ import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.openmrs.test.OpenmrsMatchers.hasId;
 import static org.openmrs.test.TestUtil.containsId;
-import static org.openmrs.test.TestUtil.createDate;
 
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
@@ -662,7 +659,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	@Test
 	public void discontinueOrder_shouldFailForADiscontinuedOrder() throws Exception {
 		Order discontinuationOrder = orderService.getOrder(2);
-		assertFalse(discontinuationOrder.isCurrent());
+		assertFalse(discontinuationOrder.isActive());
 		assertNotNull(discontinuationOrder.getDateStopped());
 		Encounter encounter = encounterService.getEncounter(3);
 		expectedException.expect(APIException.class);
@@ -678,7 +675,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	@Test
 	public void discontinueOrder_shouldNotPassForADiscontinuedOrder() throws Exception {
 		Order discontinuationOrder = orderService.getOrder(2);
-		assertFalse(discontinuationOrder.isCurrent());
+		assertFalse(discontinuationOrder.isActive());
 		assertNotNull(discontinuationOrder.getDateStopped());
 		Encounter encounter = encounterService.getEncounter(3);
 		expectedException.expect(APIException.class);
@@ -880,6 +877,49 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	}
 	
 	/**
+	 * @verifies pass if the existing drug order matches the concept and there is no drug on the previous order
+	 * @see OrderService#saveOrder(org.openmrs.Order, OrderContext)
+	 */
+	@Test
+	public void saveOrder_shouldPassIfTheExistingDrugOrderMatchesTheConceptAndThereIsNoDrugOnThePreviousOrder()
+	        throws Exception {
+		DrugOrder orderToDiscontinue = new DrugOrder();
+		orderToDiscontinue.setAction(Action.NEW);
+		orderToDiscontinue.setPatient(Context.getPatientService().getPatient(7));
+		orderToDiscontinue.setConcept(Context.getConceptService().getConcept(5497));
+		orderToDiscontinue.setCareSetting(orderService.getCareSetting(1));
+		orderToDiscontinue.setOrderer(orderService.getOrder(1).getOrderer());
+		orderToDiscontinue.setEncounter(encounterService.getEncounter(3));
+		orderToDiscontinue.setDateActivated(new Date());
+		orderToDiscontinue.setScheduledDate(new Date());
+		orderToDiscontinue.setUrgency(Order.Urgency.ON_SCHEDULED_DATE);
+		orderToDiscontinue.setEncounter(encounterService.getEncounter(3));
+		orderToDiscontinue.setOrderType(orderService.getOrderType(17));
+		
+		orderToDiscontinue.setDrug(null);
+		orderToDiscontinue.setDosingType(FreeTextDosingInstructions.class);
+		orderToDiscontinue.setDosingInstructions("instructions");
+		orderToDiscontinue.setOrderer(providerService.getProvider(1));
+		orderToDiscontinue.setDosingInstructions("2 for 5 days");
+		orderToDiscontinue.setQuantity(10.0);
+		orderToDiscontinue.setQuantityUnits(conceptService.getConcept(51));
+		orderToDiscontinue.setNumRefills(2);
+		
+		orderService.saveOrder(orderToDiscontinue, null);
+		assertTrue(OrderUtilTest.isActiveOrder(orderToDiscontinue, null));
+		
+		DrugOrder order = orderToDiscontinue.cloneForDiscontinuing();
+		order.setDateActivated(new Date());
+		order.setOrderer(providerService.getProvider(1));
+		order.setEncounter(encounterService.getEncounter(3));
+		order.setOrderReasonNonCoded("Discontinue this");
+		
+		orderService.saveOrder(order, null);
+		
+		Assert.assertNotNull("previous order should be discontinued", orderToDiscontinue.getDateStopped());
+	}
+	
+	/**
 	 * @verifies fail for a stopped order
 	 * @see OrderService#discontinueOrder(org.openmrs.Order, org.openmrs.Concept, java.util.Date,
 	 *      org.openmrs.Provider, org.openmrs.Encounter)
@@ -1049,7 +1089,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	@Test
 	public void saveOrder_shouldNotAllowRevisingAnOrderWithNoPreviousOrder() throws Exception {
 		Order originalOrder = orderService.getOrder(111);
-		assertTrue(originalOrder.isCurrent());
+		assertTrue(originalOrder.isActive());
 		Order revisedOrder = originalOrder.cloneForRevision();
 		revisedOrder.setEncounter(encounterService.getEncounter(5));
 		revisedOrder.setInstructions("Take after a meal");
@@ -1069,7 +1109,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	@Test
 	public void saveOrder_shouldSaveARevisedOrder() throws Exception {
 		Order originalOrder = orderService.getOrder(111);
-		assertTrue(originalOrder.isCurrent());
+		assertTrue(originalOrder.isActive());
 		final Patient patient = originalOrder.getPatient();
 		List<Order> originalActiveOrders = orderService.getActiveOrders(patient, null, null, null);
 		final int originalOrderCount = originalActiveOrders.size();
@@ -1082,12 +1122,10 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 		revisedOrder.setEncounter(encounterService.getEncounter(3));
 		orderService.saveOrder(revisedOrder, null);
 		
-		//If the time is too close, the original order may be returned because it
-		//dateStopped will be exactly the same as the asOfDate(now) to the millisecond
-		Thread.sleep(1);
 		List<Order> activeOrders = orderService.getActiveOrders(patient, null, null, null);
 		assertEquals(originalOrderCount, activeOrders.size());
-		assertFalse(originalOrder.isCurrent());
+		assertEquals(revisedOrder.getDateActivated(), DateUtils.addSeconds(originalOrder.getDateStopped(), 1));
+		assertFalse(originalOrder.isActive());
 	}
 	
 	/**
@@ -1401,10 +1439,10 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 		final Concept cd4Count = conceptService.getConcept(5497);
 		//sanity check that we have an active order for the same concept
 		TestOrder duplicateOrder = (TestOrder) orderService.getOrder(7);
-		assertTrue(duplicateOrder.isCurrent());
+		assertTrue(duplicateOrder.isActive());
 		assertEquals(cd4Count, duplicateOrder.getConcept());
 		
-		Order order = new Order();
+		Order order = new TestOrder();
 		order.setPatient(patient);
 		order.setCareSetting(orderService.getCareSetting(2));
 		order.setConcept(cd4Count);
@@ -1415,6 +1453,90 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 		expectedException.expect(APIException.class);
 		expectedException.expectMessage("Cannot have more than one active order for the same orderable and care setting");
 		orderService.saveOrder(order, null);
+	}
+	
+	/**
+	 * @verifies fail if an active order for the same concept and care setting exists
+	 * @see OrderService#saveOrder(org.openmrs.Order, OrderContext)
+	 */
+	@Test
+	public void saveOrder_shouldFailForRevisionOrderIfAnActiveOrderForTheSameConceptAndCareSettingExists() throws Exception {
+		//sanity check that we have an active order
+		final Patient patient = patientService.getPatient(2);
+		final Concept cd4Count = conceptService.getConcept(5497);
+		TestOrder activeOrder = new TestOrder();
+		activeOrder.setPatient(patient);
+		activeOrder.setConcept(cd4Count);
+		activeOrder.setEncounter(encounterService.getEncounter(6));
+		activeOrder.setOrderer(providerService.getProvider(1));
+		activeOrder.setCareSetting(orderService.getCareSetting(2));
+		activeOrder.setDateActivated(new Date());
+		activeOrder.setAutoExpireDate(DateUtils.addDays(new Date(), 10));
+		orderService.saveOrder(activeOrder, null);
+		
+		//New Drug order in future for same concept
+		TestOrder secondOrder = new TestOrder();
+		secondOrder.setPatient(activeOrder.getPatient());
+		secondOrder.setConcept(activeOrder.getConcept());
+		secondOrder.setEncounter(encounterService.getEncounter(6));
+		secondOrder.setOrderer(providerService.getProvider(1));
+		secondOrder.setCareSetting(activeOrder.getCareSetting());
+		secondOrder.setDateActivated(new Date());
+		secondOrder.setScheduledDate(DateUtils.addDays(activeOrder.getEffectiveStopDate(), 1));
+		secondOrder.setUrgency(Order.Urgency.ON_SCHEDULED_DATE);
+		orderService.saveOrder(secondOrder, null);
+		
+		//Revise Second Order to have scheduled date overlapping with active order
+		TestOrder revision = secondOrder.cloneForRevision();
+		revision.setScheduledDate(DateUtils.addDays(activeOrder.getEffectiveStartDate(), 2));
+		revision.setEncounter(encounterService.getEncounter(6));
+		revision.setOrderer(providerService.getProvider(1));
+		
+		expectedException.expect(APIException.class);
+		expectedException.expectMessage("Cannot have more than one active order for the same orderable and care setting");
+		orderService.saveOrder(revision, null);
+	}
+	
+	/**
+	 * @see OrderService#saveOrder(org.openmrs.Order, OrderContext)
+	 */
+	@Test
+	public void saveOrder_shouldSaveRevisionOrderScheduledOnDateNotOverlappingWithAnActiveOrderForTheSameConceptAndCareSetting()
+	        throws Exception {
+		//sanity check that we have an active order
+		final Patient patient = patientService.getPatient(2);
+		final Concept cd4Count = conceptService.getConcept(5497);
+		TestOrder activeOrder = new TestOrder();
+		activeOrder.setPatient(patient);
+		activeOrder.setConcept(cd4Count);
+		activeOrder.setEncounter(encounterService.getEncounter(6));
+		activeOrder.setOrderer(providerService.getProvider(1));
+		activeOrder.setCareSetting(orderService.getCareSetting(2));
+		activeOrder.setDateActivated(new Date());
+		activeOrder.setAutoExpireDate(DateUtils.addDays(new Date(), 10));
+		orderService.saveOrder(activeOrder, null);
+		
+		//New Drug order in future for same concept
+		TestOrder secondOrder = new TestOrder();
+		secondOrder.setPatient(activeOrder.getPatient());
+		secondOrder.setConcept(activeOrder.getConcept());
+		secondOrder.setEncounter(encounterService.getEncounter(6));
+		secondOrder.setOrderer(providerService.getProvider(1));
+		secondOrder.setCareSetting(activeOrder.getCareSetting());
+		secondOrder.setDateActivated(new Date());
+		secondOrder.setScheduledDate(DateUtils.addDays(activeOrder.getEffectiveStopDate(), 1));
+		secondOrder.setUrgency(Order.Urgency.ON_SCHEDULED_DATE);
+		orderService.saveOrder(secondOrder, null);
+		
+		//Revise Second Order to have scheduled date not overlapping with active order
+		TestOrder revision = secondOrder.cloneForRevision();
+		revision.setScheduledDate(DateUtils.addDays(activeOrder.getEffectiveStopDate(), 2));
+		revision.setEncounter(encounterService.getEncounter(6));
+		revision.setOrderer(providerService.getProvider(1));
+		
+		Order savedRevisionOrder = orderService.saveOrder(revision, null);
+		
+		assertNotNull(orderService.getOrder(savedRevisionOrder.getOrderId()));
 	}
 	
 	/**
@@ -1429,7 +1551,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 		final Patient patient = patientService.getPatient(2);
 		//sanity check that we have an active order
 		DrugOrder existingOrder = (DrugOrder) orderService.getOrder(1000);
-		assertTrue(existingOrder.isCurrent());
+		assertTrue(existingOrder.isActive());
 		//New Drug order
 		DrugOrder order = new DrugOrder();
 		order.setPatient(patient);
@@ -1459,7 +1581,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 		final Patient patient = patientService.getPatient(2);
 		//sanity check that we have an active order for the same concept
 		DrugOrder existingOrder = (DrugOrder) orderService.getOrder(1000);
-		assertTrue(existingOrder.isCurrent());
+		assertTrue(existingOrder.isActive());
 		
 		//New Drug order
 		DrugOrder order = new DrugOrder();
@@ -1490,7 +1612,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 		TestOrder duplicateOrder = (TestOrder) orderService.getOrder(7);
 		final CareSetting inpatient = orderService.getCareSetting(2);
 		assertNotEquals(inpatient, duplicateOrder.getCareSetting());
-		assertTrue(duplicateOrder.isCurrent());
+		assertTrue(duplicateOrder.isActive());
 		assertEquals(cd4Count, duplicateOrder.getConcept());
 		int initialActiveOrderCount = orderService.getActiveOrders(patient, null, null, null).size();
 		
@@ -2446,12 +2568,14 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	}
 	
 	/**
+	 * @verifies return the union of the dosing and dispensing units
 	 * @see OrderService#getDrugDispensingUnits()
-	 * @verifies return a list if GP is set
 	 */
 	@Test
-	public void getDrugDispensingUnits_shouldReturnAListIfGPIsSet() throws Exception {
-		assertThat(orderService.getDrugDispensingUnits(), contains(hasId(51)));
+	public void getDrugDispensingUnits_shouldReturnTheUnionOfTheDosingAndDispensingUnits() throws Exception {
+		List<Concept> dispensingUnits = orderService.getDrugDispensingUnits();
+		assertEquals(2, dispensingUnits.size());
+		assertThat(dispensingUnits, containsInAnyOrder(hasId(50), hasId(51)));
 	}
 	
 	/**
@@ -2461,6 +2585,7 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	@Test
 	public void getDrugDispensingUnits_shouldReturnAnEmptyListIfNothingIsConfigured() throws Exception {
 		adminService.saveGlobalProperty(new GlobalProperty(OpenmrsConstants.GP_DRUG_DISPENSING_UNITS_CONCEPT_UUID, ""));
+		adminService.saveGlobalProperty(new GlobalProperty(OpenmrsConstants.GP_DRUG_DOSING_UNITS_CONCEPT_UUID, ""));
 		assertThat(orderService.getDrugDispensingUnits(), is(empty()));
 	}
 	
@@ -2470,7 +2595,9 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	 */
 	@Test
 	public void getDrugDosingUnits_shouldReturnAListIfGPIsSet() throws Exception {
-		assertThat(orderService.getDrugDosingUnits(), containsInAnyOrder(hasId(50), hasId(51)));
+		List<Concept> dosingUnits = orderService.getDrugDosingUnits();
+		assertEquals(2, dosingUnits.size());
+		assertThat(dosingUnits, containsInAnyOrder(hasId(50), hasId(51)));
 	}
 	
 	/**
@@ -2641,38 +2768,6 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 	}
 	
 	@Test
-	public void saveOrder_shouldNotSetAutoExpireDateOfDrugOrderIfAutoExpireDateIsAlreadySet() throws Exception {
-		executeDataSet("org/openmrs/api/include/OrderServiceTest-drugOrderAutoExpireDate.xml");
-		Drug drug = conceptService.getDrug(3000);
-		DrugOrder drugOrder = new DrugOrder();
-		Encounter encounter = encounterService.getEncounter(3);
-		drugOrder.setEncounter(encounter);
-		drugOrder.setPatient(patientService.getPatient(7));
-		drugOrder.setCareSetting(orderService.getCareSetting(1));
-		drugOrder.setOrderer(Context.getProviderService().getProvider(1));
-		drugOrder.setDrug(drug);
-		drugOrder.setDosingType(SimpleDosingInstructions.class);
-		drugOrder.setDose(300.0);
-		drugOrder.setDoseUnits(conceptService.getConcept(50));
-		drugOrder.setQuantity(20.0);
-		drugOrder.setQuantityUnits(conceptService.getConcept(51));
-		drugOrder.setDuration(20);
-		drugOrder.setDurationUnits(conceptService.getConcept(1001));
-		drugOrder.setFrequency(orderService.getOrderFrequency(3));
-		drugOrder.setRoute(conceptService.getConcept(22));
-		drugOrder.setNumRefills(0);
-		drugOrder.setOrderType(null);
-		drugOrder.setDateActivated(createDate("2014-08-03"));
-		Date autoExpireDate = createDate("2014-08-04");
-		drugOrder.setAutoExpireDate(autoExpireDate);
-		
-		Order savedOrder = orderService.saveOrder(drugOrder, null);
-		
-		Order loadedOrder = orderService.getOrder(savedOrder.getId());
-		Assert.assertEquals(autoExpireDate, loadedOrder.getAutoExpireDate());
-	}
-	
-	@Test
 	public void saveOrder_shouldSetAutoExpireDateOfDrugOrderIfAutoExpireDateIsNotSet() throws Exception {
 		executeDataSet("org/openmrs/api/include/OrderServiceTest-drugOrderAutoExpireDate.xml");
 		Drug drug = conceptService.getDrug(3000);
@@ -2692,14 +2787,32 @@ public class OrderServiceTest extends BaseContextSensitiveTest {
 		drugOrder.setRoute(conceptService.getConcept(22));
 		drugOrder.setNumRefills(0);
 		drugOrder.setOrderType(null);
-		drugOrder.setDateActivated(createDate("2014-08-03"));
+		drugOrder.setDateActivated(TestUtil.createDateTime("2014-08-03"));
 		drugOrder.setDuration(20);// 20 days
 		drugOrder.setDurationUnits(conceptService.getConcept(1001));
 		
 		Order savedOrder = orderService.saveOrder(drugOrder, null);
 		
 		Order loadedOrder = orderService.getOrder(savedOrder.getId());
-		Assert.assertEquals(createDate("2014-08-23"), loadedOrder.getAutoExpireDate());
+		Assert.assertEquals(TestUtil.createDateTime("2014-08-22 23:59:59"), loadedOrder.getAutoExpireDate());
 	}
 	
+	@Test
+	public void saveOrder_shouldSetAutoExpireDateForReviseOrderWithSimpleDosingInstructions() throws Exception {
+		executeDataSet("org/openmrs/api/include/OrderServiceTest-drugOrderAutoExpireDate.xml");
+		DrugOrder originalOrder = (DrugOrder) orderService.getOrder(111);
+		assertTrue(originalOrder.isActive());
+		DrugOrder revisedOrder = originalOrder.cloneForRevision();
+		revisedOrder.setOrderer(originalOrder.getOrderer());
+		revisedOrder.setEncounter(originalOrder.getEncounter());
+		
+		revisedOrder.setNumRefills(0);
+		revisedOrder.setAutoExpireDate(null);
+		revisedOrder.setDuration(10);
+		revisedOrder.setDurationUnits(conceptService.getConcept(1001));
+		
+		orderService.saveOrder(revisedOrder, null);
+		
+		assertNotNull(revisedOrder.getAutoExpireDate());
+	}
 }

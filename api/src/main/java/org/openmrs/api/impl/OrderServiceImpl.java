@@ -25,12 +25,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Vector;
 
+import org.apache.commons.lang.time.DateUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.hibernate.proxy.HibernateProxy;
 import org.openmrs.CareSetting;
 import org.openmrs.Concept;
 import org.openmrs.ConceptClass;
+import org.openmrs.Drug;
 import org.openmrs.DrugOrder;
 import org.openmrs.Encounter;
 import org.openmrs.GlobalProperty;
@@ -39,7 +41,6 @@ import org.openmrs.OrderFrequency;
 import org.openmrs.OrderType;
 import org.openmrs.Patient;
 import org.openmrs.Provider;
-import org.openmrs.SimpleDosingInstructions;
 import org.openmrs.TestOrder;
 import org.openmrs.User;
 import org.openmrs.api.APIException;
@@ -105,23 +106,14 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 				drugOrder.setConcept(concept);
 			}
 		}
-		if (isDrugOrder && !isDiscontinueOrReviseOrder(order) && order.getAutoExpireDate() == null) {
-			DrugOrder drugOrder = (DrugOrder) order;
-			drugOrder.setAutoExpireDate(drugOrder.getDosingInstructionsInstance().getAutoExpireDate(drugOrder));
+		if (isDrugOrder) {
+			((DrugOrder) order).setAutoExpireDateBasedOnDuration();
 		}
+		
 		if (concept == null) {
 			throw new APIException("concept is required for an order");
 		}
 		
-		if (!isDiscontinueOrReviseOrder(order)) {
-			List<Order> activeOrders = getActiveOrders(order.getPatient(), null, order.getCareSetting(), null);
-			for (Order activeOrder : activeOrders) {
-				if (order.hasSameOrderableAs(activeOrder) && OrderUtil.checkScheduleOverlap(order, activeOrder)) {
-					throw new APIException(
-					        "Cannot have more than one active order for the same orderable and care setting at same time");
-				}
-			}
-		}
 		Order previousOrder = order.getPreviousOrder();
 		if (order.getOrderType() == null) {
 			OrderType orderType = null;
@@ -168,7 +160,7 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 			if (previousOrder == null) {
 				throw new APIException("Previous Order is required for a revised order");
 			}
-			stopOrder(previousOrder, order.getDateActivated());
+			stopOrder(previousOrder, aMomentBefore(order.getDateActivated()));
 		} else if (DISCONTINUE == order.getAction()) {
 			discontinueExistingOrdersIfNecessary(order);
 		}
@@ -176,14 +168,8 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 		if (previousOrder != null) {
 			//Check that patient, careSetting, concept and drug if is drug order have not changed
 			//we need to use a SQL query to by pass the hibernate cache
-			String query = "SELECT patient_id, care_setting, concept_id FROM orders WHERE order_id = ";
 			boolean isPreviousDrugOrder = DrugOrder.class.isAssignableFrom(previousOrder.getClass());
-			if (isPreviousDrugOrder) {
-				query = "SELECT o.patient_id, o.care_setting, o.concept_id, d.drug_inventory_id "
-				        + "FROM orders o, drug_order d WHERE o.order_id = d.order_id AND o.order_id =";
-			}
-			List<List<Object>> rows = Context.getAdministrationService()
-			        .executeSQL(query + previousOrder.getOrderId(), true);
+			List<List<Object>> rows = dao.getOrderFromDatabase(previousOrder, isPreviousDrugOrder);
 			List<Object> rowData = rows.get(0);
 			if (!rowData.get(0).equals(previousOrder.getPatient().getPatientId())) {
 				throw new APIException("Cannot change the patient of an order");
@@ -191,8 +177,13 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 				throw new APIException("Cannot change the careSetting of an order");
 			} else if (!rowData.get(2).equals(previousOrder.getConcept().getConceptId())) {
 				throw new APIException("Cannot change the concept of an order");
-			} else if (isPreviousDrugOrder && !rowData.get(3).equals(((DrugOrder) previousOrder).getDrug().getDrugId())) {
-				throw new APIException("Cannot change the drug of a drug order");
+			} else if (isPreviousDrugOrder) {
+				Drug previousDrug = ((DrugOrder) previousOrder).getDrug();
+				if (previousDrug == null && rowData.get(3) != null) {
+					throw new APIException("Cannot change the drug of a drug order");
+				} else if (previousDrug != null && !OpenmrsUtil.nullSafeEquals(rowData.get(3), previousDrug.getDrugId())) {
+					throw new APIException("Cannot change the drug of a drug order");
+				}
 			}
 			
 			//concept should be the same as on previous order, same applies to drug for drug orders
@@ -214,7 +205,29 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 			}
 		}
 		
+		if (DISCONTINUE != order.getAction()) {
+			List<Order> activeOrders = getActiveOrders(order.getPatient(), null, order.getCareSetting(), null);
+			for (Order activeOrder : activeOrders) {
+				if (order.hasSameOrderableAs(activeOrder)
+				        && !OpenmrsUtil.nullSafeEquals(order.getPreviousOrder(), activeOrder)
+				        && OrderUtil.checkScheduleOverlap(order, activeOrder)) {
+					throw new APIException(
+					        "Cannot have more than one active order for the same orderable and care setting at same time");
+				}
+			}
+		}
+		
 		return saveOrderInternal(order, orderContext);
+	}
+	
+	/**
+	 * To support MySQL datetime values (which are only precise to the second) we subtract one second. Eventually we may
+	 * move this method and enhance it to subtract the smallest moment the underlying database will represent.
+	 * @param date
+	 * @return one moment before date
+	 */
+	private Date aMomentBefore(Date date) {
+		return DateUtils.addSeconds(date, -1);
 	}
 	
 	private Order saveOrderInternal(Order order, OrderContext orderContext) {
@@ -302,7 +315,7 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 		//Mark previousOrder as discontinued if it is not already
 		Order previousOrder = order.getPreviousOrder();
 		if (previousOrder != null) {
-			stopOrder(previousOrder, order.getDateActivated());
+			stopOrder(previousOrder, aMomentBefore(order.getDateActivated()));
 			return;
 		}
 		
@@ -329,7 +342,7 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 			
 			if (shouldMarkAsDiscontinued) {
 				order.setPreviousOrder(activeOrder);
-				stopOrder(activeOrder, order.getDateActivated());
+				stopOrder(activeOrder, aMomentBefore(order.getDateActivated()));
 				break;
 			}
 		}
@@ -390,11 +403,11 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 	public Order unvoidOrder(Order order) throws APIException {
 		Order previousOrder = order.getPreviousOrder();
 		if (previousOrder != null && isDiscontinueOrReviseOrder(order)) {
-			if (!previousOrder.isCurrent()) {
+			if (!previousOrder.isActive()) {
 				final String action = DISCONTINUE == order.getAction() ? "discontinuation" : "revision";
 				throw new APIException("Cannot unvoid a " + action + " order if the previous order is no longer active");
 			}
-			stopOrder(previousOrder, order.getDateActivated());
+			stopOrder(previousOrder, aMomentBefore(order.getDateActivated()));
 		}
 		
 		return saveOrderInternal(order, null);
@@ -680,11 +693,11 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 		if (discontinueDate.after(new Date())) {
 			throw new IllegalArgumentException("Discontinue date cannot be in the future");
 		}
-		if (!orderToStop.isCurrent()) {
-			throw new APIException("Cannot discontinue an order that is already stopped, expired or voided");
-		}
 		if (DISCONTINUE == orderToStop.getAction()) {
 			throw new APIException("An order with action " + DISCONTINUE + " cannot be discontinued.");
+		}
+		if (!orderToStop.isActive()) {
+			throw new APIException("Cannot discontinue an order that is already stopped, expired or voided");
 		}
 		setProperty(orderToStop, "dateStopped", discontinueDate);
 		saveOrderInternal(orderToStop, null);
@@ -886,7 +899,14 @@ public class OrderServiceImpl extends BaseOpenmrsService implements OrderService
 	@Override
 	@Transactional(readOnly = true)
 	public List<Concept> getDrugDispensingUnits() {
-		return getSetMembersOfConceptSetFromGP(OpenmrsConstants.GP_DRUG_DISPENSING_UNITS_CONCEPT_UUID);
+		List<Concept> dispensingUnits = new ArrayList<Concept>();
+		dispensingUnits.addAll(getSetMembersOfConceptSetFromGP(OpenmrsConstants.GP_DRUG_DISPENSING_UNITS_CONCEPT_UUID));
+		for (Concept concept : getDrugDosingUnits()) {
+			if (!dispensingUnits.contains(concept)) {
+				dispensingUnits.add(concept);
+			}
+		}
+		return dispensingUnits;
 	}
 	
 	@Override

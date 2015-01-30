@@ -17,6 +17,7 @@ import java.util.Date;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.openmrs.api.APIException;
 import org.openmrs.api.db.hibernate.HibernateUtil;
 import org.openmrs.order.OrderUtil;
 import org.openmrs.util.OpenmrsUtil;
@@ -349,81 +350,210 @@ public class Order extends BaseOpenmrsData implements java.io.Serializable {
 	}
 	
 	/**
-	 * Convenience method to determine if order is current
+	 * Convenience method to determine if the order was active as of the current date
+	 * 
+	 * @since 1.10.1
+	 * @return boolean indicating whether the order was active on the check date
+	 */
+	public boolean isActive() {
+		return isActive(new Date());
+	}
+	
+	/**
+	 * Convenience method to determine if the order is active as of the specified date
 	 * 
 	 * @param checkDate - the date on which to check order. if null, will use current date
-	 * @return boolean indicating whether the order was current on the input date
+	 * @return boolean indicating whether the order was active on the check date
+	 * @since 1.10.1
+	 * @should return true if an order expired on the check date
+	 * @should return true if an order was discontinued on the check date
+	 * @should return true if an order was activated on the check date
+	 * @should return false for a voided order
+	 * @should return false for a discontinued order
+	 * @should return false for an expired order
+	 * @should return false for an order activated after the check date
+	 * @should return false for a discontinuation order
 	 */
-	public boolean isCurrent(Date checkDate) {
-		if (isVoided())
+	public boolean isActive(Date checkDate) {
+		if (isVoided() || action == Action.DISCONTINUE) {
 			return false;
-		
+		}
 		if (checkDate == null) {
 			checkDate = new Date();
 		}
 		
-		if (dateActivated != null && checkDate.before(dateActivated)) {
-			return false;
-		}
-		
-		if (isDiscontinuedRightNow()) {
-			if (dateStopped == null)
-				return checkDate.equals(dateActivated);
-			else
-				return checkDate.before(dateStopped);
-			
-		} else {
-			if (autoExpireDate == null)
-				return true;
-			else
-				return checkDate.before(autoExpireDate);
-		}
+		return !isFuture(checkDate) && !isDiscontinued(checkDate) && !isExpired(checkDate);
 	}
 	
+	/**
+	 * Convenience method to determine if order is current
+	 * 
+	 * @see #isActive(java.util.Date)
+	 * @param checkDate - the date on which to check order. if null, will use current date
+	 * @return boolean indicating whether the order was current on the input date
+	 */
+	@Deprecated
+	public boolean isCurrent(Date checkDate) {
+		return isActive(checkDate);
+	}
+	
+	/**
+	 * @see #isActive()
+	 * @return
+	 */
+	@Deprecated
 	public boolean isCurrent() {
-		return isCurrent(new Date());
+		return isActive(new Date());
 	}
 	
+	/**
+	 * Convenience method to determine if the order is not yet activated as of the given date
+	 * 
+	 * @deprecated use isStarted(java.util.Date)
+	 * @see #isStarted(java.util.Date)
+	 * @param checkDate - the date on which to check order. if null, will use current date
+	 * @return boolean indicating whether the order was activated after the check date
+	 * @should return false for a voided order
+	 * @should return false if dateActivated is null
+	 * @should return false if order was activated on the check date
+	 * @should return true if order was activated after the check date
+	 */
+	@Deprecated
 	public boolean isFuture(Date checkDate) {
 		if (isVoided())
 			return false;
-		if (checkDate == null)
+		if (checkDate == null) {
 			checkDate = new Date();
+		}
 		
 		return dateActivated != null && checkDate.before(dateActivated);
 	}
 	
+	/**
+	 * @deprecated use isStarted()
+	 * @see #isStarted()
+	 * @return
+	 */
+	@Deprecated
 	public boolean isFuture() {
 		return isFuture(new Date());
 	}
 	
 	/**
-	 * Convenience method to determine if order is discontinued at a given time
+	 * Convenience method to determine if order is started as of the current date
+	 * 
+	 * @return boolean indicating whether the order is started as of the current date
+	 * @since 1.10.1
+	 * @see #isStarted(java.util.Date)
+	 */
+	public boolean isStarted() {
+		return isStarted(new Date());
+	}
+	
+	/**
+	 * Convenience method to determine if the order is started as of the specified date, returns
+	 * true only if the order has been activated. In case of scheduled orders, the scheduledDate
+	 * becomes the effective start date that gets used to determined if it is started.
+	 * 
+	 * @param checkDate - the date on which to check order. if null, will use current date
+	 * @return boolean indicating whether the order is started as of the check date
+	 * @since 1.10.1
+	 * @should return false for a voided order
+	 * @should return false if dateActivated is null
+	 * @should return false if the order is not yet activated as of the check date
+	 * @should return false if the order was scheduled to start after the check date
+	 * @should return true if the order was scheduled to start on the check date
+	 * @should return true if the order was scheduled to start before the check date
+	 * @should return true if the order is started and not scheduled
+	 */
+	public boolean isStarted(Date checkDate) {
+		if (isVoided()) {
+			return false;
+		}
+		if (checkDate == null) {
+			checkDate = new Date();
+		}
+		if (getEffectiveStartDate() == null) {
+			return false;
+		}
+		return !checkDate.before(getEffectiveStartDate());
+	}
+	
+	/**
+	 * Convenience method to determine if the order is discontinued as of the specified date
 	 * 
 	 * @param checkDate - the date on which to check order. if null, will use current date
 	 * @return boolean indicating whether the order was discontinued on the input date
+	 * @should return false for a voided order
+	 * @should return false if date stopped and auto expire date are both null
+	 * @should return false if auto expire date is null and date stopped is equal to check date
+	 * @should return false if auto expire date is null and date stopped is after check date
+	 * @should return false if dateActivated is after check date
+	 * @should return true if auto expire date is null and date stopped is before check date
+	 * @should fail if date stopped is after auto expire date
+	 * @should return true if check date is after date stopped but before auto expire date
+	 * @should return true if check date is after both date stopped auto expire date
 	 */
 	public boolean isDiscontinued(Date checkDate) {
-		if (isVoided())
+		if (dateStopped != null && autoExpireDate != null && dateStopped.after(autoExpireDate)) {
+			throw new APIException("The order has invalid dateStopped and autoExpireDate values");
+		}
+		if (isVoided()) {
 			return false;
-		if (checkDate == null)
+		}
+		if (checkDate == null) {
 			checkDate = new Date();
+		}
+		if (dateActivated == null || isFuture(checkDate) || dateStopped == null) {
+			return false;
+		}
+		return checkDate.after(dateStopped);
+	}
+	
+	/**
+	 * Convenience method to determine if the order is expired as of the specified date
+	 * 
+	 * @return boolean indicating whether the order is expired at the current time
+	 * @since 1.10.1
+	 */
+	public boolean isExpired() {
+		return isExpired(new Date());
+	}
+	
+	/**
+	 * Convenience method to determine if order was expired at a given time
+	 * 
+	 * @param checkDate - the date on which to check order. if null, will use current date
+	 * @return boolean indicating whether the order was expired on the input date
+	 * @should return false for a voided order
+	 * @should return false if date stopped and auto expire date are both null
+	 * @should return false if date stopped is null and auto expire date is equal to check date
+	 * @should return false if date stopped is null and auto expire date is after check date
+	 * @should return false if check date is after both date stopped auto expire date
+	 * @should return false if dateActivated is after check date
+	 * @should return false if check date is after date stopped but before auto expire date
+	 * @should fail if date stopped is after auto expire date
+	 * @should return true if date stopped is null and auto expire date is before check date
+	 * @since 1.10.1
+	 */
+	public boolean isExpired(Date checkDate) {
+		if (dateStopped != null && autoExpireDate != null && dateStopped.after(autoExpireDate)) {
+			throw new APIException("The order has invalid dateStopped and autoExpireDate values");
+		}
+		if (isVoided()) {
+			return false;
+		}
+		if (checkDate == null) {
+			checkDate = new Date();
+		}
+		if (dateActivated == null || isFuture(checkDate)) {
+			return false;
+		}
+		if (isDiscontinued(checkDate) || autoExpireDate == null) {
+			return false;
+		}
 		
-		if (dateActivated == null || checkDate.before(dateActivated)) {
-			return false;
-		}
-		if (dateStopped != null && dateStopped.after(checkDate)) {
-			return false;
-		}
-		if (dateStopped == null) {
-			return false;
-		}
-		
-		// guess we can't assume this has been filled correctly?
-		/*
-		 * if (dateStopped == null) { return false; }
-		 */
-		return true;
+		return checkDate.after(autoExpireDate);
 	}
 	
 	/*
